@@ -53,6 +53,50 @@ func (d *Database) placeholder(n int) string {
 // Debug enables debug mode, where unused columns and struct fields will be logged
 var Debug = true
 
+type primaryKeyType int
+
+const (
+	pkTypeInt64 primaryKeyType = iota
+	pkTypeString
+)
+
+type primaryKey struct {
+	key         string
+	valueType   primaryKeyType
+	valueInt64  int64  // valueType == pkTypeInt
+	valueString string // valuetype == pkTypeString
+}
+
+func (p *primaryKey) isEmptyValue() bool {
+	if p == nil {
+		return true
+	}
+	if p.key == "" {
+		return true
+	}
+
+	switch p.valueType {
+	case pkTypeInt64:
+		return p.valueInt64 == 0
+	case pkTypeString:
+		return p.valueString == ""
+	}
+
+	// not recognize this type
+	return true
+}
+
+func (p *primaryKey) value() interface{} {
+	switch p.valueType {
+	case pkTypeInt64:
+		return p.valueInt64
+	case pkTypeString:
+		return p.valueString
+	default:
+		return nil
+	}
+}
+
 type structField struct {
 	column     string
 	index      int
@@ -124,12 +168,18 @@ func getFields(dstType reflect.Type) (*structData, error) {
 					return nil, fmt.Errorf("meddler found field %s which is marked as the primary key but is a pointer", f.Name)
 				}
 
-				// make sure it is an int of some kind
+				// make sure it is a supported pk field
 				switch f.Type.Kind() {
+
+				// pkTypeInt64
 				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 				case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+
+				// pkTypeString
+				case reflect.String:
+
 				default:
-					return nil, fmt.Errorf("meddler found field %s which is marked as the primary key, but is not an integer type", f.Name)
+					return nil, fmt.Errorf("meddler found field %s which is marked as the primary key, but is not an valid type", f.Name)
 				}
 
 				if data.pk != "" {
@@ -206,37 +256,44 @@ func ColumnsQuoted(src interface{}, includePk bool) (string, error) {
 
 // PrimaryKey returns the name and value of the primary key field. The name
 // is the empty string if there is not primary key field marked.
-func (d *Database) PrimaryKey(src interface{}) (name string, pk int64, err error) {
+func (d *Database) PrimaryKey(src interface{}) (pk *primaryKey, err error) {
 	data, err := getFields(reflect.TypeOf(src))
 	if err != nil {
-		return "", 0, err
+		return nil, err
 	}
 
 	if data.pk == "" {
-		return "", 0, nil
+		return nil, nil
 	}
 
-	name = data.pk
-	field := reflect.ValueOf(src).Elem().Field(data.fields[name].index)
+	pk = &primaryKey{}
+	pk.key = data.pk
+
+	field := reflect.ValueOf(src).Elem().Field(data.fields[pk.key].index)
 	switch field.Type().Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		pk = field.Int()
+		pk.valueInt64 = field.Int()
+		pk.valueType = pkTypeInt64
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		pk = int64(field.Uint())
+		pk.valueInt64 = int64(field.Uint())
+		pk.valueType = pkTypeInt64
+	case reflect.String:
+		pk.valueString = field.String()
+		pk.valueType = pkTypeString
 	default:
-		return "", 0, fmt.Errorf("meddler found field %s which is marked as the primary key, but is not an integer type", name)
+		return nil, fmt.Errorf("meddler found field %s which is marked as the primary key, but is not an valid type", pk.key)
 	}
 
-	return name, pk, nil
+	return pk, nil
 }
 
 // PrimaryKey using the Default Database type
-func PrimaryKey(src interface{}) (name string, pk int64, err error) {
+func PrimaryKey(src interface{}) (*primaryKey, error) {
 	return Default.PrimaryKey(src)
 }
 
 // SetPrimaryKey sets the primary key field to the given int value.
-func (d *Database) SetPrimaryKey(src interface{}, pk int64) error {
+func (d *Database) SetPrimaryKey(src interface{}, pk interface{}) error {
 	data, err := getFields(reflect.TypeOf(src))
 	if err != nil {
 		return err
@@ -249,11 +306,13 @@ func (d *Database) SetPrimaryKey(src interface{}, pk int64) error {
 	field := reflect.ValueOf(src).Elem().Field(data.fields[data.pk].index)
 	switch field.Type().Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		field.SetInt(pk)
+		field.SetInt(pk.(int64))
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		field.SetUint(uint64(pk))
+		field.SetUint(pk.(uint64))
+	case reflect.String:
+		field.SetString(pk.(string))
 	default:
-		return fmt.Errorf("meddler found field %s which is marked as the primary key, but is not an integer type", data.pk)
+		return fmt.Errorf("meddler found field %s which is marked as the primary key, but is not an valid type", data.pk)
 	}
 
 	return nil
@@ -434,7 +493,7 @@ func Targets(dst interface{}, columns []string) ([]interface{}, error) {
 // by Targets.
 func (d *Database) WriteTargets(dst interface{}, columns []string, targets []interface{}) error {
 	if len(columns) != len(targets) {
-		return fmt.Errorf("meddler.WriteTargets: mismatch in number of columns (%d) and targets (%s)",
+		return fmt.Errorf("meddler.WriteTargets: mismatch in number of columns (%d) and targets (%d)",
 			len(columns), len(targets))
 	}
 

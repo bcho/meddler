@@ -3,13 +3,14 @@ package meddler
 import (
 	"database/sql"
 	"fmt"
-	_ "github.com/mattn/go-sqlite3"
 	"reflect"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 var once sync.Once
@@ -51,6 +52,12 @@ type UintPerson struct {
 	Height    *int       `meddler:"height"`
 }
 
+type StringMen struct {
+	ID   string `meddler:"id,pk"`
+	Name string `meddler:"name"`
+	Age  int    `meddler:,zeroisnull`
+}
+
 const schema1 = `create table person (
 	id integer primary key,
 	name text not null,
@@ -66,6 +73,12 @@ const schema2 = `create table item (
 	id integer primary key,
 	stuff text not null,
 	stuffz blob not null
+)`
+
+const schema3 = `create table men (
+        id text primary key,
+        name text,
+        age integer
 )`
 
 var aliceHeight int = 65
@@ -101,6 +114,9 @@ func setup() {
 	}
 	if _, err = db.Exec(schema2); err != nil {
 		panic("error creating item table: " + err.Error())
+	}
+	if _, err = db.Exec(schema3); err != nil {
+		panic("error creating men table: " + err.Error())
 	}
 }
 
@@ -267,28 +283,41 @@ func TestColumnsQuoted(t *testing.T) {
 func TestPrimaryKey(t *testing.T) {
 	p := new(Person)
 	p.ID = 56
-	name, val, err := PrimaryKey(p)
+	pk, err := PrimaryKey(p)
 	if err != nil {
 		t.Errorf("Error getting PrimaryKey: %v", err)
 	}
-	if name != "id" {
-		t.Errorf("Expected pk name to be id, found %s", name)
+	if pk.key != "id" {
+		t.Errorf("Expected pk name to be id, found %s", pk.key)
 	}
-	if val != 56 {
-		t.Errorf("Expected pk value to be 56, found %d", val)
+	if pk.valueInt64 != 56 {
+		t.Errorf("Expected pk value to be 56, found %d", pk.valueInt64)
 	}
 
 	p2 := new(UintPerson)
 	p2.ID = 56
-	name, val, err = PrimaryKey(p2)
+	pk, err = PrimaryKey(p2)
 	if err != nil {
 		t.Errorf("Error getting PrimaryKey: %v", err)
 	}
-	if name != "id" {
-		t.Errorf("Expected pk name to be id, found %s", name)
+	if pk.key != "id" {
+		t.Errorf("Expected pk name to be id, found %s", pk.key)
 	}
-	if val != 56 {
-		t.Errorf("Expected pk value to be 56, found %d", val)
+	if pk.valueInt64 != 56 {
+		t.Errorf("Expected pk value to be 56, found %d", pk.valueInt64)
+	}
+
+	p3 := new(StringMen)
+	p3.ID = "56"
+	pk, err = PrimaryKey(p3)
+	if err != nil {
+		t.Errorf("Error getting PrimaryKey: %v", err)
+	}
+	if pk.key != "id" {
+		t.Errorf("Expected pk name to be id, found %s", pk.key)
+	}
+	if pk.valueString != "56" {
+		t.Errorf("Expected pk value to be 56, found %s", pk.valueString)
 	}
 }
 

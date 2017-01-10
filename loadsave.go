@@ -34,23 +34,23 @@ type DB interface {
 
 // Load loads a record using a query for the primary key field.
 // Returns sql.ErrNoRows if not found.
-func (d *Database) Load(db DB, table string, dst interface{}, pk int64) error {
+func (d *Database) Load(db DB, table string, dst interface{}, pk interface{}) error {
 	columns, err := d.ColumnsQuoted(dst, true)
 	if err != nil {
 		return err
 	}
 
 	// make sure we have a primary key field
-	pkName, _, err := d.PrimaryKey(dst)
+	p, err := d.PrimaryKey(dst)
 	if err != nil {
 		return err
 	}
-	if pkName == "" {
+	if p.key == "" {
 		return fmt.Errorf("meddler.Load: no primary key field found")
 	}
 
 	// run the query
-	q := fmt.Sprintf("SELECT %s FROM %s WHERE %s = %s", columns, d.quoted(table), d.quoted(pkName), d.Placeholder)
+	q := fmt.Sprintf("SELECT %s FROM %s WHERE %s = %s", columns, d.quoted(table), d.quoted(p.key), d.Placeholder)
 
 	rows, err := db.Query(q, pk)
 	if err != nil {
@@ -62,7 +62,7 @@ func (d *Database) Load(db DB, table string, dst interface{}, pk int64) error {
 }
 
 // Load using the Default Database type
-func Load(db DB, table string, dst interface{}, pk int64) error {
+func Load(db DB, table string, dst interface{}, pk interface{}) error {
 	return Default.Load(db, table, dst, pk)
 }
 
@@ -71,12 +71,13 @@ func Load(db DB, table string, dst interface{}, pk int64) error {
 // will be set to the newly-allocated primary key value from the database
 // as returned by LastInsertId.
 func (d *Database) Insert(db DB, table string, src interface{}) error {
-	pkName, pkValue, err := d.PrimaryKey(src)
+	pk, err := d.PrimaryKey(src)
 	if err != nil {
 		return err
 	}
-	if pkName != "" && pkValue != 0 {
-		return fmt.Errorf("meddler.Insert: primary key must be zero")
+
+	if !pk.isEmptyValue() {
+		return fmt.Errorf("meddler.Insert: primary key must be empty")
 	}
 
 	// gather the query parts
@@ -95,8 +96,8 @@ func (d *Database) Insert(db DB, table string, src interface{}) error {
 
 	// run the query
 	q := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", d.quoted(table), namesPart, valuesPart)
-	if d.UseReturningToGetID && pkName != "" {
-		q += " RETURNING " + d.quoted(pkName)
+	if d.UseReturningToGetID && pk.key != "" {
+		q += " RETURNING " + d.quoted(pk.key)
 		var newPk int64
 		err := db.QueryRow(q, values...).Scan(&newPk)
 		if err != nil {
@@ -105,7 +106,7 @@ func (d *Database) Insert(db DB, table string, src interface{}) error {
 		if err = d.SetPrimaryKey(src, newPk); err != nil {
 			return fmt.Errorf("meddler.Insert: Error saving updated pk: %v", err)
 		}
-	} else if pkName != "" {
+	} else if pk.key != "" {
 		result, err := db.Exec(q, values...)
 		if err != nil {
 			return &dbErr{msg: "meddler.Insert: DB error in Exec", err: err}
@@ -160,23 +161,30 @@ func (d *Database) Update(db DB, table string, src interface{}) error {
 		pairs = append(pairs, pair)
 	}
 
-	pkName, pkValue, err := d.PrimaryKey(src)
+	pk, err := d.PrimaryKey(src)
 	if err != nil {
 		return err
 	}
-	if pkName == "" {
+	if pk.key == "" {
 		return fmt.Errorf("meddler.Update: no primary key field")
 	}
-	if pkValue < 1 {
-		return fmt.Errorf("meddler.Update: primary key must be an integer > 0")
+	switch pk.valueType {
+	case pkTypeInt64:
+		if pk.valueInt64 < 1 {
+			return fmt.Errorf("meddler.Update: primary key must be an integer > 0")
+		}
+	case pkTypeString:
+		if pk.valueString == "" {
+			return fmt.Errorf("meddler.Update: primary key must not be empty")
+		}
 	}
 	ph := d.placeholder(len(placeholders) + 1)
 
 	// run the query
 	q := fmt.Sprintf("UPDATE %s SET %s WHERE %s=%s", d.quoted(table),
 		strings.Join(pairs, ","),
-		d.quoted(pkName), ph)
-	values = append(values, pkValue)
+		d.quoted(pk.key), ph)
+	values = append(values, pk.value())
 
 	if _, err := db.Exec(q, values...); err != nil {
 		return &dbErr{msg: "meddler.Update: DB error in Exec", err: err}
@@ -193,11 +201,11 @@ func Update(db DB, table string, src interface{}) error {
 // Save performs an INSERT or an UPDATE, depending on whether or not
 // a primary keys exists and is non-zero.
 func (d *Database) Save(db DB, table string, src interface{}) error {
-	pkName, pkValue, err := d.PrimaryKey(src)
+	pk, err := d.PrimaryKey(src)
 	if err != nil {
 		return err
 	}
-	if pkName != "" && pkValue != 0 {
+	if pk.key != "" && !pk.isEmptyValue() {
 		return d.Update(db, table, src)
 	} else {
 		return d.Insert(db, table, src)
